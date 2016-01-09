@@ -48,6 +48,12 @@ typedef struct {
     ngx_str_t                        ssl_certificate_key;
     ngx_array_t                     *ssl_passwords;
 
+    ngx_flag_t                       dyn_rec_enable;
+    ngx_msec_t                       dyn_rec_timeout;
+    size_t                           dyn_rec_size_lo;
+    size_t                           dyn_rec_size_hi;
+    ngx_uint_t                       dyn_rec_threshold;
+
     ngx_ssl_t                       *ssl;
 #endif
 
@@ -310,6 +316,41 @@ static ngx_command_t  ngx_stream_proxy_commands[] = {
       ngx_stream_proxy_ssl_password_file,
       NGX_STREAM_SRV_CONF_OFFSET,
       0,
+      NULL },
+
+    { ngx_string("proxy_ssl_dyn_rec_enable"),
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_STREAM_SRV_CONF_OFFSET,
+      offsetof(ngx_stream_proxy_srv_conf_t, dyn_rec_enable),
+      NULL },
+
+    { ngx_string("proxy_ssl_dyn_rec_timeout"),
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_msec_slot,
+      NGX_STREAM_SRV_CONF_OFFSET,
+      offsetof(ngx_stream_proxy_srv_conf_t, dyn_rec_timeout),
+      NULL },
+
+    { ngx_string("proxy_ssl_dyn_rec_size_lo"),
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_size_slot,
+      NGX_STREAM_SRV_CONF_OFFSET,
+      offsetof(ngx_stream_proxy_srv_conf_t, dyn_rec_size_lo),
+      NULL },
+
+    { ngx_string("proxy_ssl_dyn_rec_size_hi"),
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_size_slot,
+      NGX_STREAM_SRV_CONF_OFFSET,
+      offsetof(ngx_stream_proxy_srv_conf_t, dyn_rec_size_hi),
+      NULL },
+
+    { ngx_string("proxy_ssl_dyn_rec_threshold"),
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_num_slot,
+      NGX_STREAM_SRV_CONF_OFFSET,
+      offsetof(ngx_stream_proxy_srv_conf_t, dyn_rec_threshold),
       NULL },
 
 #endif
@@ -1854,6 +1895,11 @@ ngx_stream_proxy_create_srv_conf(ngx_conf_t *cf)
     conf->ssl_verify = NGX_CONF_UNSET;
     conf->ssl_verify_depth = NGX_CONF_UNSET_UINT;
     conf->ssl_passwords = NGX_CONF_UNSET_PTR;
+    conf->dyn_rec_enable = NGX_CONF_UNSET;
+    conf->dyn_rec_timeout = NGX_CONF_UNSET_MSEC;
+    conf->dyn_rec_size_lo = NGX_CONF_UNSET_SIZE;
+    conf->dyn_rec_size_hi = NGX_CONF_UNSET_SIZE;
+    conf->dyn_rec_threshold = NGX_CONF_UNSET_UINT;
 #endif
 
     return conf;
@@ -1933,6 +1979,20 @@ ngx_stream_proxy_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_ptr_value(conf->ssl_passwords, prev->ssl_passwords, NULL);
 
+    ngx_conf_merge_value(conf->dyn_rec_enable, prev->dyn_rec_enable, 0);
+    ngx_conf_merge_msec_value(conf->dyn_rec_timeout, prev->dyn_rec_timeout,
+                             1000);
+    /* Default sizes for the dynamic record sizes are defined to fit maximal
+       TLS + IPv6 overhead in a single TCP segment for lo and 3 segments for hi:
+       1369 = 1500 - 40 (IP) - 20 (TCP) - 10 (Time) - 61 (Max TLS overhead) */
+    ngx_conf_merge_size_value(conf->dyn_rec_size_lo, prev->dyn_rec_size_lo,
+                             1369);
+    /* 4229 = (1500 - 40 - 20 - 10) * 3  - 61 */
+    ngx_conf_merge_size_value(conf->dyn_rec_size_hi, prev->dyn_rec_size_hi,
+                             4229);
+    ngx_conf_merge_uint_value(conf->dyn_rec_threshold, prev->dyn_rec_threshold,
+                             40);
+
     if (conf->ssl_enable && ngx_stream_proxy_set_ssl(cf, conf) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
@@ -2008,6 +2068,28 @@ ngx_stream_proxy_set_ssl(ngx_conf_t *cf, ngx_stream_proxy_srv_conf_t *pscf)
         if (ngx_ssl_crl(cf, pscf->ssl, &pscf->ssl_crl) != NGX_OK) {
             return NGX_ERROR;
         }
+    }
+
+    if (pscf->dyn_rec_enable) {
+        pscf->ssl->dyn_rec.timeout = pscf->dyn_rec_timeout;
+        pscf->ssl->dyn_rec.threshold = pscf->dyn_rec_threshold;
+
+        if (pscf->buffer_size > pscf->dyn_rec_size_lo) {
+            pscf->ssl->dyn_rec.size_lo = pscf->dyn_rec_size_lo;
+
+        } else {
+            pscf->ssl->dyn_rec.size_lo = pscf->buffer_size;
+        }
+
+        if (pscf->buffer_size > pscf->dyn_rec_size_hi) {
+            pscf->ssl->dyn_rec.size_hi = pscf->dyn_rec_size_hi;
+
+        } else {
+            pscf->ssl->dyn_rec.size_hi = pscf->buffer_size;
+        }
+
+    } else {
+        pscf->ssl->dyn_rec.timeout = 0;
     }
 
     return NGX_OK;
