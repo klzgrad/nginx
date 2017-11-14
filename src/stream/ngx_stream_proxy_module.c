@@ -1056,6 +1056,13 @@ ngx_stream_proxy_ssl_init_connection(ngx_stream_session_t *s)
         }
     }
 
+    ngx_ssl_conn_t *ssl = pc->ssl->connection;
+    SSL_enable_tls_channel_id(ssl);
+    const u_char alpn_str[] = "\x02h2\x08http/1.1";
+    SSL_set_alpn_protos(ssl, alpn_str, sizeof(alpn_str) - 1);
+    SSL_enable_signed_cert_timestamps(ssl);
+    SSL_enable_ocsp_stapling(ssl);
+
     if (pscf->ssl_session_reuse) {
         if (u->peer.set_session(&u->peer, u->peer.data) != NGX_OK) {
             ngx_stream_proxy_finalize(s, NGX_STREAM_INTERNAL_SERVER_ERROR);
@@ -2020,6 +2027,8 @@ ngx_stream_proxy_set_ssl(ngx_conf_t *cf, ngx_stream_proxy_srv_conf_t *pscf)
     if (ngx_ssl_create(pscf->ssl, pscf->ssl_protocols, NULL) != NGX_OK) {
         return NGX_ERROR;
     }
+
+    SSL_CTX_set_grease_enabled(pscf->ssl->ctx, 1);
 
     cln = ngx_pool_cleanup_add(cf->pool, 0);
     if (cln == NULL) {
